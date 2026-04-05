@@ -25,12 +25,43 @@ namespace DriveCLISync.Services
             Directory.CreateDirectory(_downloadPath);
         }
 
+        public async Task SearchFilesByNameAsync(string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(fileName))
+                return;
+            //Get the files with that name
+            var driveFiles = await GetAllFilesAsync(fileName);
+            if (!driveFiles.Any())
+            {
+                Console.WriteLine($"No files found with the name: {fileName}.");
+                return;
+            }
+
+            var localFiles = GetLocalFiles(fileName);
+
+            foreach (var file in driveFiles)
+            {
+                var isDownloadedLocaly = localFiles.Contains(file.Name.ToLower());
+                Console.WriteLine(isDownloadedLocaly ? $"{file.Name}  [Downloaded]" : $"{file.Name}  [Not Downloaded]");
+            }
+        }
+
+        private List<string> GetLocalFiles(string fileOrFolderName)
+        {
+            if (!Directory.Exists(_downloadPath))
+                return new List<string>();
+
+            return Directory.GetFileSystemEntries(_downloadPath)
+                  .Select(x => Path.GetFileName(x).ToLower())
+                  .ToList();
+        }
+
         public async Task DownloadAllFilesAsync()
         {
             var stopwatch = Stopwatch.StartNew();
 
             Console.WriteLine("Fetching files list from Google Drive...");
-            var files = await GetAllFilesAsync();
+            var files = await GetAllFilesAsync(string.Empty);
             _totalFiles = files.Count;
 
             Console.WriteLine($"Found {_totalFiles} files.\n");
@@ -49,7 +80,7 @@ namespace DriveCLISync.Services
             DisplayStatistics(stopwatch.Elapsed);
         }
 
-        private async Task<List<File>> GetAllFilesAsync()
+        private async Task<List<File>> GetAllFilesAsync(string? fileName)
         {
             var allFiles = new List<File>();
             var pageToken = string.Empty;
@@ -59,6 +90,9 @@ namespace DriveCLISync.Services
                 var request = _driveService.Files.List();
                 request.PageSize = 100;
                 request.PageToken = pageToken;
+
+                if (!string.IsNullOrWhiteSpace(fileName))
+                    request.Q = $"name contains '{fileName}'";
 
                 var result = await request.ExecuteAsync();
                 allFiles.AddRange(result.Files);

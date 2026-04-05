@@ -19,8 +19,15 @@ Console.WriteLine("search -> Searches for files or folders by name.");
 Console.WriteLine("upload -> Uploads a file from the local file system to a specific folder path in Google Drive.");
 var command = Console.ReadLine()?.Trim().ToLower();
 
+var downloadService = new GoogleDriveService(driveService);
 if (command == "sync")
 {
-    var downloadService = new GoogleDriveService(driveService);
     await downloadService.DownloadAllFilesAsync();
+}
+else if (command == "search")
+{
+    Console.WriteLine("Enter the name of the file or folder to search for:");
+    var fileName = Console.ReadLine()?.Trim();
+    if(!string.IsNullOrWhiteSpace(fileName))
+        await downloadService.SearchFilesByNameAsync(fileName);
 }
