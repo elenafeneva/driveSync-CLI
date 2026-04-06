@@ -5,7 +5,7 @@ using Google.Apis.Util.Store;
 
 namespace DriveCLISync.Services
 {
-    public class GoogleAuthService
+    public class GoogleAuthService : IGoogleAuthService
     {
         private readonly string _credentialsPath;
         private readonly string _tokenStorePath;

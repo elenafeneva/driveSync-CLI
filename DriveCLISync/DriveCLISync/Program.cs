@@ -1,33 +1,59 @@
 ﻿using DriveCLISync.Services;
+using System.CommandLine;
 
-
-Console.WriteLine("Starting DriveClISync...");
-Console.WriteLine("Authenticating with Google Drive...");
-var tokenFolder = Path.Combine(
+var credentialsPath = Path.Combine(AppContext.BaseDirectory, "client_secret.json");
+var tokenStorePath = Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-    "DriveCLISync",
-    "token"
+    "DriveCLISync", "token"
 );
 
-var authService = new GoogleAuthService("client_secret.json", tokenFolder);
-var driveService = await authService.GetDriveServiceAsync();
+var rootCommand = new RootCommand("DriveCLISync — Google Drive CLI Tool");
 
-Console.WriteLine("Authentication successful.");
-Console.WriteLine("Send command for action. Commands: ");
-Console.WriteLine("sync -> Downloads al files from the connected Google Drive to a local Downloads directory.");
-Console.WriteLine("search -> Searches for files or folders by name.");
-Console.WriteLine("upload -> Uploads a file from the local file system to a specific folder path in Google Drive.");
-var command = Console.ReadLine()?.Trim().ToLower();
+//Sync Command
+var downloadCommand = new Command("sync", "Download all files from Google Drive");
 
-var downloadService = new GoogleDriveService(driveService);
-if (command == "sync")
+downloadCommand.SetHandler(async () =>
 {
-    await downloadService.DownloadAllFilesAsync();
-}
-else if (command == "search")
+    IGoogleAuthService authService = new GoogleAuthService(credentialsPath, tokenStorePath);
+    var driveService = await authService.GetDriveServiceAsync();
+
+    IGoogleDriveService service = new GoogleDriveService(driveService);
+    await service.DownloadAllFilesAsync();
+});
+
+//Search Command
+var searchArgument = new Argument<string>("query", "File or folder name to search for");
+var searchCommand = new Command("search", "Search for files or folders in Google Drive");
+searchCommand.AddArgument(searchArgument);
+
+searchCommand.SetHandler(async (string query) =>
 {
-    Console.WriteLine("Enter the name of the file or folder to search for:");
-    var fileName = Console.ReadLine()?.Trim();
-    if(!string.IsNullOrWhiteSpace(fileName))
-        await downloadService.SearchFilesByNameAsync(fileName);
-}
+    IGoogleAuthService authService = new GoogleAuthService(credentialsPath, tokenStorePath);
+    var driveService = await authService.GetDriveServiceAsync();
+
+    IGoogleDriveService service = new GoogleDriveService(driveService);
+    await service.SearchFilesByNameAsync(query);
+}, searchArgument);
+
+//Upload Command
+var localPathArgument = new Argument<string>("local_path", "Path to the local file to upload");
+var drivePathArgument = new Argument<string>("drive_path", "Target folder name in Google Drive");
+var uploadCommand = new Command("upload", "Upload a file to Google Drive");
+uploadCommand.AddArgument(localPathArgument);
+uploadCommand.AddArgument(drivePathArgument);
+
+uploadCommand.SetHandler(async (string localPath, string drivePath) =>
+{
+    IGoogleAuthService authService = new GoogleAuthService(credentialsPath, tokenStorePath);
+    var driveService = await authService.GetDriveServiceAsync();
+
+    IGoogleDriveService service = new GoogleDriveService(driveService);
+    await service.UploadAsync(localPath, drivePath);
+}, localPathArgument, drivePathArgument);
+
+//Register Commands
+rootCommand.AddCommand(downloadCommand);
+rootCommand.AddCommand(searchCommand);
+rootCommand.AddCommand(uploadCommand);
+
+await rootCommand.InvokeAsync(args);

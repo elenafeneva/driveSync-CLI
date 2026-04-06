@@ -4,7 +4,7 @@ using File = Google.Apis.Drive.v3.Data.File;
 
 namespace DriveCLISync.Services
 {
-    public class GoogleDriveService
+    public class GoogleDriveService : IGoogleDriveService
     {
         private readonly DriveService _driveService;
 
@@ -25,12 +25,14 @@ namespace DriveCLISync.Services
             Directory.CreateDirectory(_downloadPath);
         }
 
+        #region Search Files
         public async Task SearchFilesByNameAsync(string fileName)
         {
             if (string.IsNullOrWhiteSpace(fileName))
                 return;
+
             //Get the files with that name
-            var driveFiles = await GetAllFilesAsync(fileName);
+            var driveFiles = await GetFilesAsync(fileName);
             if (!driveFiles.Any())
             {
                 Console.WriteLine($"No files found with the name: {fileName}.");
@@ -45,42 +47,7 @@ namespace DriveCLISync.Services
                 Console.WriteLine(isDownloadedLocaly ? $"{file.Name}  [Downloaded]" : $"{file.Name}  [Not Downloaded]");
             }
         }
-
-        private List<string> GetLocalFiles(string fileOrFolderName)
-        {
-            if (!Directory.Exists(_downloadPath))
-                return new List<string>();
-
-            return Directory.GetFileSystemEntries(_downloadPath)
-                  .Select(x => Path.GetFileName(x).ToLower())
-                  .ToList();
-        }
-
-        public async Task DownloadAllFilesAsync()
-        {
-            var stopwatch = Stopwatch.StartNew();
-
-            Console.WriteLine("Fetching files list from Google Drive...");
-            var files = await GetAllFilesAsync(string.Empty);
-            _totalFiles = files.Count;
-
-            Console.WriteLine($"Found {_totalFiles} files.\n");
-            // Set up parallel options with a maximum number of parallelism
-            var options = new ParallelOptions
-            {
-                MaxDegreeOfParallelism = _maxParallelDownloads
-            };
-
-            await Parallel.ForEachAsync(files, options, async (file, token) =>
-            {
-                await DownloadFileParallelAsync(file);
-            });
-
-            stopwatch.Stop();
-            DisplayStatistics(stopwatch.Elapsed);
-        }
-
-        private async Task<List<File>> GetAllFilesAsync(string? fileName)
+        private async Task<List<File>> GetFilesAsync(string? fileName)
         {
             var allFiles = new List<File>();
             var pageToken = string.Empty;
@@ -101,6 +68,40 @@ namespace DriveCLISync.Services
             } while (!string.IsNullOrWhiteSpace(pageToken));
 
             return allFiles;
+        }
+        private List<string> GetLocalFiles(string fileOrFolderName)
+        {
+            if (!Directory.Exists(_downloadPath))
+                return new List<string>();
+
+            return Directory.GetFileSystemEntries(_downloadPath)
+                  .Select(x => Path.GetFileName(x).ToLower())
+                  .ToList();
+        }
+        #endregion
+        #region Sync Files
+        public async Task DownloadAllFilesAsync()
+        {
+            var stopwatch = Stopwatch.StartNew();
+
+            Console.WriteLine("Fetching files list from Google Drive...");
+            var files = await GetFilesAsync(string.Empty);
+            _totalFiles = files.Count;
+
+            Console.WriteLine($"Found {_totalFiles} files.\n");
+            // Set up parallel options with a maximum number of parallelism
+            var options = new ParallelOptions
+            {
+                MaxDegreeOfParallelism = _maxParallelDownloads
+            };
+
+            await Parallel.ForEachAsync(files, options, async (file, token) =>
+            {
+                await DownloadFileParallelAsync(file);
+            });
+
+            stopwatch.Stop();
+            DisplayStatistics(stopwatch.Elapsed);
         }
 
         private async Task DownloadFileParallelAsync(File file)
@@ -135,13 +136,12 @@ namespace DriveCLISync.Services
             //Check if the file already exists
             if (System.IO.File.Exists(filePath))
             {
-                _alreadyExistsCount++;
+                Interlocked.Increment(ref _alreadyExistsCount);
                 return string.Empty;
             }
 
             return filePath;
         }
-
         private void DisplayStatistics(TimeSpan elapsed)
         {
             Console.WriteLine("=== DOWNLOAD SUMMARY ===");
@@ -152,6 +152,77 @@ namespace DriveCLISync.Services
             Console.WriteLine($"Failed downloads: {_failedCount}");
             Console.WriteLine($"Elapsed time: {elapsed.TotalSeconds:F2} seconds");
         }
+        #endregion
+        #region Upload Files
+        public async Task UploadAsync(string localPath, string drivePath)
+        {
+            // 1. Validate local file exists
+            if (!System.IO.File.Exists(localPath))
+            {
+                Console.WriteLine($"Local file not found: {localPath}");
+                return;
+            }
 
+            // 2. Find or create the folder
+            var folder = await FindFolderAsync(drivePath);
+
+            if (folder == null)
+            {
+                folder = await CreateFolderAsync(drivePath);
+                Console.WriteLine($"Folder created: {drivePath}");
+            }
+
+            // 3. Upload file to that folder
+            await UploadFileAsync(localPath, folder.Id);
+        }
+
+        private async Task<File?> FindFolderAsync(string folderName)
+        {
+            var request = _driveService.Files.List();
+            request.Fields = "files(id, name)";
+            request.Q = $"name = '{folderName}' " +
+                        $"and mimeType = 'application/vnd.google-apps.folder' " +
+                        $"and trashed = false";
+
+            var result = await request.ExecuteAsync();
+            return result.Files.FirstOrDefault();
+        }
+
+        private async Task<File> CreateFolderAsync(string folderName)
+        {
+            var folderMetadata = new File
+            {
+                Name = folderName,
+                MimeType = "application/vnd.google-apps.folder"
+            };
+
+            var request = _driveService.Files.Create(folderMetadata);
+            request.Fields = "id, name";
+            return await request.ExecuteAsync();
+        }
+
+        private async Task UploadFileAsync(string localPath, string folderId)
+        {
+            var fileName = Path.GetFileName(localPath);
+
+            var fileMetadata = new File
+            {
+                Name = fileName,
+                Parents = new List<string> { folderId }
+            };
+
+            using var stream = new FileStream(localPath, FileMode.Open, FileAccess.Read);
+
+            var request = _driveService.Files.Create(fileMetadata, stream, "application/octet-stream");
+            request.Fields = "id, name";
+
+            var result = await request.UploadAsync();
+
+            if (result.Status == Google.Apis.Upload.UploadStatus.Completed)
+                Console.WriteLine($"Upload complete: {fileName}");
+            else
+                Console.WriteLine($"Upload failed: {result.Exception?.Message}");
+        }
+        #endregion
     }
 }
